@@ -1,0 +1,15 @@
+node_modules
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+uploads/
+__tests__
+scripts/
+.git
+README.md
+postman_collection.json
+walkthrough.md

@@ -1,0 +1,107 @@
+services:
+
+  # ---- PostgreSQL Database ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: restaurant_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: restaurant_dbs
+      POSTGRES_USER: ${DB_USER:-restaurant_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in src/BE_THLTW/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/config/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    ports:
+      - "5433:5432"  # Host port 5433 -> Container port 5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-restaurant_user} -d restaurant_dbs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    container_name: restaurant_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- Seeder ----
+  seeder:
+    build: .
+    container_name: restaurant_seeder
+    command: node src/config/seed.js
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-restaurant_user}:${DB_PASSWORD:?Set DB_PASSWORD in src/BE_THLTW/.env}@postgres:5432/restaurant_dbs
+    restart: "no"
+
+  # ---- Index Applier ----
+  indexer:
+    build: .
+    container_name: restaurant_indexer
+    command: node src/config/applyIndexes.js
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-restaurant_user}:${DB_PASSWORD:?Set DB_PASSWORD in src/BE_THLTW/.env}@postgres:5432/restaurant_dbs
+    restart: "no"
+
+  # ---- Backend Node.js ----
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: restaurant_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seeder:
+        condition: service_completed_successfully
+      indexer:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      DATABASE_URL: postgres://${DB_USER:-restaurant_user}:${DB_PASSWORD:?Set DB_PASSWORD in src/BE_THLTW/.env}@postgres:5432/restaurant_dbs
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in src/BE_THLTW/.env}
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in src/BE_THLTW/.env}
+      JWT_REFRESH_EXPIRES_IN: 7d
+      VNPAY_TMNCODE: ${VNPAY_TMNCODE:?Set VNPAY_TMNCODE in src/BE_THLTW/.env}
+      VNPAY_HASHSECRET: ${VNPAY_HASHSECRET:?Set VNPAY_HASHSECRET in src/BE_THLTW/.env}
+      VNPAY_URL: https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
+      VNPAY_RETURN_URL: ${VNPAY_RETURN_URL:-http://localhost:3000/payment-result}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      DISH_IMAGE_STORAGE_DIR: /app/uploads/dish-images
+      DISH_IMAGE_PUBLIC_BASE_URL: ${DISH_IMAGE_PUBLIC_BASE_URL:-http://localhost:5001/uploads/dish-images}
+      DISH_IMAGE_MAX_BYTES: ${DISH_IMAGE_MAX_BYTES:-5242880}
+    ports:
+      - "5001:5000"
+    volumes:
+      - dish_image_uploads:/app/uploads/dish-images
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+  dish_image_uploads:
+    driver: local
